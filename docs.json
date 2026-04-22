@@ -1,0 +1,33 @@
+{
+  "$schema": "https://mintlify.com/docs.json",
+  "theme": "mint",
+  "name": "sbriny's notes",
+  "colors": {
+    "primary": "#0D9373",
+    "light": "#55D799",
+    "dark": "#0D9373"
+  },
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "文档",
+        "groups": [
+          {
+            "group": "首页",
+            "pages": [
+              "content/index"
+            ]
+          },
+          {
+            "group": "Linux",
+            "pages": [
+              "content/linux/command-df",
+              "content/linux/command-du",
+              "content/linux/offline-epel"
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}

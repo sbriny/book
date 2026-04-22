@@ -1,2 +1,27 @@
+# Fumadocs 本地项目(不上传)
+fumadocs-site/
+
+# macOS
+.DS_Store
+**/.DS_Store
+
+# 编辑器
 **/.vscode
+**/.idea
+
+# 依赖
 **/node_modules
+
+# 构建产物
+**/.next
+**/.source
+**/dist
+**/build
+
+# 日志
+*.log
+npm-debug.log*
+
+# 备份(如果以后临时备份时用)
+*-backup-*
+*.bak
