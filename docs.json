@@ -8,21 +8,37 @@
     "dark": "#0D9373"
   },
   "navigation": {
-    "tabs": [
+    "versions": [
       {
-        "tab": "Untitled Tab",
-        "hidden": true,
-        "dropdowns": [
+        "version": "Untitled Version",
+        "tabs": [
           {
-            "dropdown": "Untitled Dropdown",
-            "tabs": [
+            "tab": "Untitled Tab",
+            "hidden": true,
+            "dropdowns": [
               {
-                "tab": "文档",
-                "pages": [
+                "dropdown": "Untitled Dropdown",
+                "tabs": [
                   {
-                    "group": "Untitled Group",
-                    "pages": []
+                    "tab": "文档",
+                    "pages": [
+                      {
+                        "group": "Untitled Group",
+                        "pages": []
+                      }
+                    ]
                   }
+                ]
+              }
+            ]
+          },
+          {
+            "tab": "1",
+            "pages": [
+              {
+                "group": "首页",
+                "pages": [
+                  "content/index"
                 ]
               }
             ]
@@ -30,21 +46,39 @@
         ]
       },
       {
-        "tab": "1",
-        "pages": [
-          "untitled-page",
+        "version": "Windows",
+        "tabs": [
           {
-            "group": "Linux",
-            "pages": [
-              "content/linux/command-df",
-              "content/linux/command-du",
-              "content/linux/offline-epel"
+            "tab": "Apps",
+            "menu": [
+              {
+                "item": "ShowCase",
+                "pages": [
+                  "untitled-page-copied-1",
+                  {
+                    "group": "迭代",
+                    "pages": [
+                      "20260424"
+                    ]
+                  }
+                ]
+              }
             ]
           },
           {
-            "group": "首页",
+            "tab": "Untitled Tab"
+          },
+          {
+            "tab": "Untitled Tab",
             "pages": [
-              "content/index"
+              {
+                "group": "Linux",
+                "pages": [
+                  "content/linux/command-df",
+                  "content/linux/command-du",
+                  "content/linux/offline-epel"
+                ]
+              }
             ]
           }
         ]
