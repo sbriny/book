@@ -10,20 +10,41 @@
   "navigation": {
     "tabs": [
       {
-        "tab": "文档",
-        "groups": [
+        "tab": "Untitled Tab",
+        "hidden": true,
+        "dropdowns": [
           {
-            "group": "首页",
-            "pages": [
-              "content/index"
+            "dropdown": "Untitled Dropdown",
+            "tabs": [
+              {
+                "tab": "文档",
+                "pages": [
+                  {
+                    "group": "Untitled Group",
+                    "pages": []
+                  }
+                ]
+              }
             ]
-          },
+          }
+        ]
+      },
+      {
+        "tab": "1",
+        "pages": [
+          "untitled-page",
           {
             "group": "Linux",
             "pages": [
               "content/linux/command-df",
               "content/linux/command-du",
               "content/linux/offline-epel"
+            ]
+          },
+          {
+            "group": "首页",
+            "pages": [
+              "content/index"
             ]
           }
         ]

@@ -1,0 +1,543 @@
+---
+title: "ComponentShowcase 开发文档"
+---
+
+> 一个基于 Sandpack 的多模板 React 组件沙盒。支持实时代码编辑、多组件管理、缩略图预览。
+
+---
+
+## 第一章 功能概述
+
+### 1.1 功能定位
+
+ComponentShowcase 是一个浏览器内的 React 组件沙盒，用于快速在多个 UI 方案之间切换对比。
+
+它的位置介于 CodePen 和 Storybook 之间：
+
+- 比 CodePen 更有序——支持多组件管理、缩略图总览
+- 比 Storybook 更即时——代码可直接修改、无需构建流程
+- 比 CodeSandbox 更轻——无需建项目、无后端依赖
+
+### 1.2 核心能力
+
+| 能力 | 说明 |
+| :-- | :-- |
+| 实时编辑 | 基于 Sandpack，支持语法高亮、错误提示 |
+| 可选预览 | 预览窗口可折叠，只看代码时更专注 |
+| 多组件管理 | 侧边栏列出所有组件，支持新建 / 删除 / 重命名 |
+| 缩略图 | 每个组件渲染为等比缩小的活预览 |
+| 主题适配 | 跟随全局 ThemeContext 切换明/暗模式 |
+| 布局控制 | 侧边栏可折叠、可拖拽调宽 |
+
+### 1.3 技术栈
+
+- **React 18** \+ Hooks
+- **@codesandbox/sandpack-react**：核心编辑器与预览
+- **@babel/standalone**：缩略图的客户端 JSX 编译
+- **framer-motion / lucide-react**：用户代码可用的依赖（缩略图环境用 Proxy fallback）
+
+---
+
+## 第二章 架构设计
+
+### 2.1 整体结构
+
+```text
+ComponentShowcase (状态中枢)
+│
+├── Sidebar
+│   └── ThumbnailCard × N
+│       └── iframe (独立渲染)
+│
+└── Editor 区
+    └── SandpackProvider  (key=activeId)
+        ├── CodeSyncer    (隐形桥)
+        └── SandpackLayout
+            ├── SandpackCodeEditor
+            └── SandpackPreview  (可选)
+```
+
+- 左右两栏布局：侧边栏放缩略图，主区放 Sandpack
+- 每个缩略图是一个独立的 iframe，自己跑一套 Babel 编译管道
+- Sandpack 通过 `key={activeId}` 在切换组件时完整重建
+
+### 2.2 数据流
+
+**唯一数据源**：`templates` 数组，形如 `[{ id, label, code }, ...]`。
+
+```text
+         templates (主 state)
+              │
+      ┌───────┴────────┐
+      ▼                ▼
+ ThumbnailCard    SandpackProvider
+ (读 code 渲染)   (mount 时读 code)
+                       │
+                       ▼
+                 用户在编辑器修改
+                       │
+                       ▼
+                   CodeSyncer
+                 (500ms 节流)
+                       │
+                       ▼
+              setTemplates(...)
+                       │
+              (缩略图自动更新)
+```
+
+**三条核心原则**：
+
+1. **编辑期零外部渲染**——用户敲代码时不触发父组件 re-render，避免编辑器失焦/光标跳
+2. **切换期完整重建**——切换组件用 `key` 销毁重建 Sandpack，状态完全隔离
+3. **缩略图是降级环境**——只求渲染出 DOM 骨架，不追求和 Sandpack 完全一致
+
+### 2.3 关键机制
+
+#### 代码同步机制（CodeSyncer）
+
+Sandpack 内部状态通过 `useSandpack` hook 订阅，500ms 节流后写回外部 `templates`。
+
+```text
+const CodeSyncer = ({ activeId, onCodeChange }) => {
+    const { sandpack } = useSandpack();
+    const code = sandpack.files['/App.js']?.code;
+    const lastSyncedRef = useRef(code);
+
+    useEffect(() => {
+        if (code === undefined) return;
+        if (code === lastSyncedRef.current) return;
+        const timer = setTimeout(() => {
+            lastSyncedRef.current = code;
+            onCodeChange(activeId, code);
+        }, 500);
+        return () => clearTimeout(timer);
+    }, [code, activeId, onCodeChange]);
+
+    return null;
+};
+```
+
+CodeSyncer 本身不渲染 UI，纯粹是个订阅桥。它接收 state 变化只会导致自己重渲染，不影响兄弟节点。
+
+#### 缩略图编译管道
+
+```text
+template.code (JSX 源码)
+      │
+   loadBabel()            懒加载,Promise 单例
+      │
+   compileJsx()           preset-react + transform-modules-commonjs
+      │
+   buildSrcdoc()          包装成完整 HTML
+      │
+   iframe srcDoc
+      │
+   new Function(...)      注入 React/require/module,执行用户代码
+      │
+   module.exports.default
+      │
+   ReactDOM.createRoot().render()
+```
+
+关键设计：
+
+- **懒加载**：首次进入视口才构建（IntersectionObserver，rootMargin 120px）
+- **防抖**：代码变化 800ms 后才重编译
+- **取消**：每次 buildDoc 创建新的 cancelFlag，旧回调检测到 cancelled 直接 return
+- **隔离**：用 `new Function` 执行用户代码，显式传入 `React/ReactDOM/require/module/exports`
+
+#### iframe 模块系统
+
+iframe 里实现一个最小的 CommonJS `require`：
+
+```text
+var __modules = {
+    'react':            React,           // 带 __esModule 补丁
+    'react-dom':        ReactDOM,
+    'framer-motion':    buildFramerMotionFallback(),
+    'lucide-react':     buildLucideFallback(),
+};
+
+function require(name) {
+    if (__modules[name]) return __modules[name];
+    console.warn('[preview] unknown module:', name);
+    return {};  // 未知 module 返回空对象,不抛错
+}
+```
+
+#### 依赖 Fallback 策略
+
+缩略图环境无法真正加载 npm 包，用 Proxy 模拟常见库的 API：
+
+- **framer-motion**：双层 Proxy。`motion` 本身是 Proxy，`motion.div` 返回渲染 div 的函数组件。动画 prop 被剥离，动画效果看不到但不报错
+- **lucide-react**：任意图标名都返回一个带 currentColor 背景的占位 span
+
+原则：**不求还原功能，只求不崩且渲染出 DOM 骨架**。
+
+### 2.4 性能关键路径
+
+**Babel 单例** 多个缩略图同时调用 `loadBabel` 只加载一次（Promise 缓存）。
+
+**拖拽 Sidebar** 拖拽期间只改 CSS 变量 `--cs-sidebar-w`，用 `requestAnimationFrame` 合帧。松手后才 `setSidebarWidth`。组件树在拖拽期间完全不 re-render。
+
+**缩略图重编译防抖** `template.code` 变化 800ms 后才触发重编译，避免用户连续敲键盘时疯狂编译。
+
+---
+
+## 第三章 开发说明
+
+### 3.1 代码结构
+
+整个功能在单文件 `ShowCase.jsx` 内，按区块组织：
+
+```text
+常量                    SIDEBAR_MIN/MAX、BLANK_CODE、SANDPACK_DEPS
+createTemplate()        模板工厂
+loadBabel()             Babel 单例加载
+compileJsx()            ES module → CommonJS
+buildSrcdoc()           iframe HTML 模板
+makeSandpackTheme()     主题工厂
+CodeSyncer              Sandpack 状态订阅桥
+ToolBtn                 工具栏按钮
+ThumbnailCard           缩略图卡片
+ComponentShowcase       主组件
+```
+
+### 3.2 如何修改与扩展
+
+**新增一个用户可用的依赖**
+
+两个地方都要改：
+
+1. `SANDPACK_DEPS` 里加上（Sandpack 环境用真实 npm 包）
+2. `__modules` 里加 fallback（缩略图环境用模拟对象）
+
+```text
+// Sandpack 真实依赖
+const SANDPACK_DEPS = {
+    'lucide-react':   'latest',
+    'framer-motion':  'latest',
+    'your-new-lib':   'latest',   // ← 新增
+};
+
+// 缩略图 fallback
+var __modules = {
+    // ...
+    'your-new-lib':   buildYourLibFallback(),   // ← 新增
+};
+```
+
+Fallback 的设计原则见 2.3 节末尾。
+
+**新增一个工具栏按钮**
+
+在 `ComponentShowcase` 的工具栏区域，用 `<ToolBtn>` 组件追加即可。按钮 icon 从 `lucide-react` 选。
+
+**修改缩略图渲染逻辑**
+
+改 `buildSrcdoc` 函数。修改后手动测试几个典型场景：
+
+- 有 import、无 import
+- 有 hooks、无 hooks
+- 有副作用（useEffect）、无副作用
+- 用到 framer-motion、用到 lucide-react
+
+**修改同步节流时间**
+
+常量 `SYNC_DEBOUNCE_MS`（默认 500）和 `THUMB_DEBOUNCE_MS`（默认 800）。
+
+### 3.3 调试技巧
+
+**缩略图不显示 / 空白**
+
+1. 检查父页面 console 有没有 `[preview]` 开头的 warning
+2. 在 iframe 的 body 看有没有红色错误文字（`.cs-err` 类）
+3. 临时在 `compileJsx` 里加 `console.log('[compiled]', code)` 看 Babel 输出是否为 CommonJS
+
+**编辑器代码丢失**
+
+检查 CodeSyncer 是否正常订阅：在它的 useEffect 里加 log，确认 `code` 变化能触发。
+
+**拖拽 Sidebar 卡顿**
+
+确认 `--cs-sidebar-w` CSS 变量在拖拽时变化，而不是触发 `setState`。F12 选中根节点看 computed style 变化。
+
+---
+
+## 第四章 变更记录
+
+### 4.1 20260420 初版
+
+**改了什么** 功能首次实现。支持多组件管理、实时编辑、缩略图、主题切换、Sidebar 拖拽。
+
+**主要设计决策**
+
+- Sandpack 拆分布局（不用打包好的 `<Sandpack>`），支持 `showPreview` 条件渲染
+- 缩略图用独立 iframe \+ 客户端 Babel 编译
+- `key={activeId}` 切换时重建 Sandpack
+- CodeSyncer 节流订阅、拖拽用 CSS 变量、缩略图懒加载等性能优化
+
+---
+
+### 4.2 20260423 Sandpack 依赖补全
+
+**改了什么** `customSetup.dependencies` 里增加 `framer-motion`。
+
+**为什么改** 用户代码里 `import { motion } from 'framer-motion'` 时 Sandpack 报错 `Could not find dependency`。Sandpack 的依赖系统是显式声明式的，不会自动解析 import。
+
+**怎么改的**
+
+```text
+customSetup={{
+    dependencies: {
+        'lucide-react':  'latest',
+        'framer-motion': 'latest',   // ← 新增
+    }
+}}
+```
+
+后续新增用户可能 import 的库都要在这里登记。
+
+---
+
+### 4.3 20260423 代码同步架构重构
+
+**改了什么** 放弃 `useRef` 管理 Sandpack files 的方案，改用 `SandpackProvider` \+ `CodeSyncer` 节流双向同步。
+
+**为什么改** 旧方案的 `sandpackFilesRef` 只在 `activeId` 变化时读一次，编辑器内部的修改没有任何机制同步回外部 `templates`。后果：
+
+- 切换组件再切回来，之前的修改全部丢失
+- `templates[i].code` 永远是初始 `BLANK_CODE`，缩略图永远显示初始内容
+- `showPreview` 切换重渲染时可能覆盖用户代码
+
+本质问题：把"避免 re-render"和"不同步状态"混为一谈了。
+
+**怎么改的**
+
+不再用打包好的 `<Sandpack>`，拆成 Provider \+ Layout：
+
+```text
+<SandpackProvider
+    key={activeId}
+    files={{ '/App.js': activeTemplate.code }}
+    customSetup={{ dependencies: SANDPACK_DEPS }}
+>
+    <CodeSyncer activeId={activeId} onCodeChange={handleCodeChange} />
+    <SandpackLayout>
+        <SandpackCodeEditor ... />
+        {showPreview && <SandpackPreview ... />}
+    </SandpackLayout>
+</SandpackProvider>
+```
+
+CodeSyncer 通过 `useSandpack` 订阅内部 state，500ms 节流后写回 `templates`。因为它是独立子组件，自身重渲染不影响兄弟节点。
+
+**关键点**：
+
+- `key={activeId}` 保证切换时重建，从 `activeTemplate.code` 读最新代码
+- 切换前 500ms 内的修改已被同步，不丢数据
+- `showPreview` 只是条件渲染 `<SandpackPreview>`，Provider 实例不变
+
+---
+
+### 4.4 20260424 Babel 编译管道重构
+
+**改了什么** 放弃正则处理 ES module 语法，改用 Babel 的 `transform-modules-commonjs` 插件。
+
+**为什么改** 旧的正则方案：
+
+```text
+.replace(/^import\s+.*?from\s+['"][^'"]+['"]\s*;?\s*$/gm, '')
+.replace(/^export\s+default\s+function\s+/m, 'function ')
+```
+
+遇到以下情况全部失败：
+
+- 多行 import（`import { a,\n b } from 'x'`）
+- 注释里包含 export
+- 箭头函数默认导出（`export default () => ...`）
+- 命名重导出（`export { Foo as default }`）
+
+**怎么改的**
+
+```text
+const compileJsx = (Babel, jsxCode) => {
+    const { code } = Babel.transform(jsxCode, {
+        presets: ['react'],
+        plugins: ['transform-modules-commonjs'],
+        sourceType: 'module',
+    });
+    return code;
+};
+```
+
+配合 iframe 里的 `require` 实现（见 2.3），用户代码的 `import/export` 被转成 `require/module.exports`，在我们自己实现的模块系统里运行。
+
+**避坑提示** 不要用 `preset-env` \+ `targets: { esmodules: true }`，这会让 preset-env 认为浏览器支持 ESM 从而跳过 module 转换。直接用独立的 `transform-modules-commonjs` 最可靠。
+
+---
+
+### 4.5 20260424 iframe 错误处理重构
+
+**改了什么** 用户代码的执行从直接嵌入 `<script>` 改为通过 `new Function` 运行，错误用 try/catch 捕获。
+
+**为什么改** 旧方案有几个致命问题：
+
+1. **Script error 脱敏**：iframe 跨域，`window.onerror` 只能拿到 `"Script error."`，看不到真实报错
+2. **SyntaxError 抓不到**：脚本解析阶段的错误，try/catch 跑不到那一行
+3. **用户代码里如果含** `</script> `**会破坏 HTML 结构**
+4. **内部变量名** `App `**和用户代码重名**，触发 `Identifier 'App' has already been declared`
+
+**怎么改的**
+
+把用户代码用 JSON.stringify 包装成字符串，用 `new Function` 在运行时执行：
+
+```text
+var userCode = ${JSON.stringify(compiledJs)};
+
+try {
+    var runner = new Function(
+        'React', 'ReactDOM', 'require', 'module', 'exports',
+        '"use strict";\n' + userCode
+    );
+    runner(React, ReactDOM, myRequire, __module, __module.exports);
+} catch (e) {
+    showError('[执行错误] ' + (e.stack || e.message));
+}
+```
+
+好处：
+
+- SyntaxError 在 `new Function()` 时抛，能被 try/catch 捕获
+- RuntimeError 在 `runner()` 时抛，也能捕获
+- 错误对象是同 realm 创建的，不受跨域脱敏
+- JSON.stringify 自动转义所有特殊字符，`</script>` 不再是问题
+- 用户代码在函数作用域里执行，不和模板变量冲突
+
+同时把内部变量改名，避免撞车：
+
+```text
+var __RootComponent = __module.exports.default || ...;
+ReactDOM.createRoot(...).render(React.createElement(__RootComponent));
+```
+
+以及补上 React 的 `__esModule` interop（否则 `import React, { useState } from 'react'` 里的 useState 会是 undefined）：
+
+```text
+if (!React.__esModule) {
+    var reactWrapper = { __esModule: true, default: React };
+    for (var k in React) reactWrapper[k] = React[k];
+    __modules['react'] = reactWrapper;
+}
+```
+
+---
+
+### 4.6 20260424 framer-motion 双层 Proxy
+
+**改了什么** 缩略图里 `framer-motion` 的 fallback 从单层 Proxy 升级为双层结构。
+
+**为什么改** 旧的单层 Proxy：
+
+```text
+'framer-motion': new Proxy({}, {
+    get: function(_, prop) {
+        return function(props) { return React.createElement('div', props); };
+    }
+})
+```
+
+用户代码 `<motion.div />` 的访问路径是：
+
+1. `require('framer-motion').motion` → Proxy get 'motion' → 返回一个函数
+2. `motion.div` → **访问函数对象的** `.div `**属性 → undefined**
+3. `React.createElement(undefined)` → React error #130
+
+**怎么改的**
+
+`motion` 本身也做成 Proxy，同时剥离 framer-motion 特有的 props 避免 React warning：
+
+```text
+function buildFramerMotionFallback() {
+    var lib = { __esModule: true };
+
+    lib.motion = new Proxy(function() {}, {
+        get: function(_, tag) {
+            if (typeof tag !== 'string') return undefined;
+            return function(props) {
+                var clean = stripMotionProps(props);
+                return React.createElement(tag, clean, props && props.children);
+            };
+        }
+    });
+
+    // AnimatePresence 等容器组件:透传 children
+    ['AnimatePresence', 'LazyMotion', 'MotionConfig', 'LayoutGroup']
+        .forEach(function(name) {
+            lib[name] = function(props) {
+                return React.createElement(React.Fragment, null,
+                    props && props.children);
+            };
+        });
+
+    // hooks: 返回 noop 控制对象
+    ['useAnimation', 'useAnimationControls', 'useMotionValue',
+     'useTransform', 'useSpring', 'useScroll', 'useInView']
+        .forEach(function(name) {
+            lib[name] = function() {
+                return {
+                    start: function() { return Promise.resolve(); },
+                    stop:  function() {},
+                    set:   function() {},
+                    get:   function() { return 0; },
+                };
+            };
+        });
+
+    lib.default = lib;
+    return lib;
+}
+```
+
+**设计原则** 缩略图里动画效果看不到没关系，但至少要渲染出 DOM 骨架。所有被剥离的 motion prop（animate/initial/variants/whileHover 等）都不会影响布局。
+
+同期 `lucide-react` 的 fallback 也做了类似升级，所有图标名返回一个占位 span。
+
+---
+
+## 附录
+
+### A. 问题诊断手册
+
+**Q: 缩略图空白不显示** 先看 iframe body 里有没有红色错误文字。如果有，按文字定位；如果没有：
+
+- 可能是 Babel 没加载成功（父页面 console 有 error）
+- 可能是 srcdoc 构建失败（在 `buildDoc` 里加 log）
+- 可能是用户代码没有默认导出（错误信息会提示）
+
+**Q: 缩略图报** `Identifier 'X' has already been declared` 内部变量和用户代码撞名了。给内部变量加 `__` 前缀。
+
+**Q: 缩略图里** `X is not defined `**但 Sandpack 里正常** 说明 X 是个 npm 包，缩略图环境没有对应的 fallback。去 `__modules` 里添加。
+
+**Q: 编辑器代码切换组件后丢失** 检查 CodeSyncer 的订阅是否正常。确认 `onCodeChange` 回调能触发 `setTemplates`。
+
+**Q: 拖拽 Sidebar 卡顿** 确认是在改 CSS 变量而不是 setState。看 devtools Performance 有没有频繁的 React re-render。
+
+**Q: 切换** `showPreview `**后编辑器状态丢失** 确认用的是 `SandpackProvider` \+ 条件渲染 `<SandpackPreview>`，不是打包好的 `<Sandpack>` 组件。
+
+### B. 当前状态总览
+
+| 机制 | 当前实现版本 | 对应章节 |
+| :-- | :-- | :-- |
+| 代码同步 | 20260423 | §2.3、§4.3 |
+| Babel 编译 | 20260424 | §4.4 |
+| iframe 错误处理 | 20260424 | §4.5 |
+| framer-motion fallback | 20260424 | §4.6 |
+| lucide-react fallback | 20260424 | §4.6 |
+| 拖拽性能 | 初版 | §2.4 |
+| 缩略图懒加载 | 初版 | §2.3 |
+
+---
+
+**文档版本**：对应代码 20260424 **维护方式**：代码改动后在第四章追加一条 `### 4.X 日期 标题`，并更新附录 B 对应行
