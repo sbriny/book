@@ -1,0 +1,143 @@
+---
+title: "20260425"
+---
+
+### 4.2 tooltip 渲染位置重构
+
+**改了什么** tooltip 从 `DockIcon` 内部移到 `Dock` 顶层，与 `.dock-wrapper` 平级渲染。定位从 `position: absolute` 改为 `position: fixed` \+ JS 坐标注入。
+
+**为什么改** `.dock-wrapper` 的 `mix-blend-mode: difference` 创建了新的 stacking context，tooltip 作为其子元素，颜色受 difference 运算影响，设置 `color: red` 后实际显示颜色异常。子元素无法通过任何 CSS 属性逃脱父元素的混合上下文，唯一解法是将 tooltip 移出该容器。
+
+**怎么改的**
+
+`DockIcon` 新增 `onMouseEnter` / `onMouseLeave` prop，hover 时通过 `getBoundingClientRect()` 把 icon 坐标和状态数据向上传给 `Dock`。`Dock` 统一维护 `tooltip` state，在组件树顶层渲染 tooltip。
+
+```text
+// DockIcon 向上传坐标
+const handleMouseEnter = () => {
+    const rect = btnRef.current.getBoundingClientRect();
+    onMouseEnter({ app, isActive, isMinimized, instanceCount, relativeTime, lastFocusedAt, rect });
+};
+
+// Dock 顶层渲染
+<div className="dock-tooltip" style={{
+    position: 'fixed',
+    left: tooltip.rect.left + tooltip.rect.width / 2,
+    top: tooltip.rect.top - 12,
+    transform: 'translateX(-50%) translateY(-100%)',
+}} />
+```
+
+---
+
+### 4.3 图标颜色可见性优化
+
+**改了什么** `.dock-icon-svg` 增加双层 `drop-shadow`，补充 `stroke` 描边。
+
+**为什么改** `mix-blend-mode: difference` 在纯色背景下图标颜色自适应效果好，但在复杂图片壁纸下，混合结果不可控，部分图片下图标颜色与背景对比度不足，图标轮廓不清晰。
+
+**怎么改的**
+
+双层 drop-shadow 原理：白色光晕在深色背景上形成亮边，黑色扩散晕在浅色背景上形成暗边，两层叠加后不管背景深浅图标边缘都有对比：
+
+```text
+.dock-icon-svg {
+    filter:
+        drop-shadow(0 0 1.3px rgba(255,255,255,0.8))
+        drop-shadow(0 0 1px rgba(0,0,0,0.5));
+    stroke: rgba(255,255,255,0.9);
+    stroke-width: 0.5px;
+    paint-order: stroke fill;
+}
+```
+
+---
+
+### 4.4 tooltip 箭头方案确定
+
+**改了什么** 放弃 tooltip 箭头，改为无箭头设计。
+
+**为什么改** 尝试了三种方案均失败：
+
+| 方案 | 问题 |
+| :-- | :-- |
+| `border` 三角形 | 颜色固定，无法与毛玻璃背景保持一致 |
+| 伪元素 `::after` \+ `backdrop-filter` | 大多数浏览器伪元素不支持 backdrop-filter |
+| 真实 div \+ `clip-path` 裁三角形 | `clip-path` 把 `backdrop-filter` 渲染区域也裁掉，效果消失 |
+
+**结论** 现代 OS（macOS、Windows 11）的 tooltip 均已不带箭头，毛玻璃质感配合位置关系足以建立视觉关联，不需要箭头。
+
+---
+
+### 4.5 入场动画
+
+**改了什么** 新增 Dock 入场动画：visionOS 风格"从中心向两侧凝结"，配合容器背景闪现。
+
+**为什么改** Dock 初始化时图标直接出现，缺乏仪式感。visionOS 的"空间凝结"效果（scale \+ blur \+ spring）与当前 Dock 的毛玻璃风格契合。
+
+**怎么改的**
+
+`DockIcon` 新增 `centerSpreadDelay` prop，注入到 `motion.button` 的 `transition.delay`：
+
+```text
+<motion.button
+    initial={{ opacity: 0, scale: 0.75, filter: 'blur(12px)' }}
+    animate={{ opacity: 1, scale: 1, filter: 'blur(0px)' }}
+    transition={{
+        delay: centerSpreadDelay,
+        type: 'spring',
+        stiffness: 200,
+        damping: 22,
+        mass: 0.8,
+    }}
+/>
+```
+
+`Dock` 层计算每个 icon 的 delay：
+
+```text
+const center = Math.floor(dockApps.length / 2);
+const getDelay = (index) => Math.abs(index - center) * 0.08;
+```
+
+容器背景与图标动画同步出现，在最后一个图标动画结束后消失：
+
+```text
+useEffect(() => {
+    const maxDelay = Math.floor(dockApps.length / 2) * 0.08;
+    setContainerFlash(true);
+    const t = setTimeout(() => setContainerFlash(false), maxDelay * 1000 + 800);
+    return () => clearTimeout(t);
+}, []);
+```
+
+**只改了这三处，其余逻辑和样式完全未动。**
+
+---
+
+## 附录
+
+### A. 问题诊断
+
+**Q: tooltip 颜色异常** 检查 tooltip 是否渲染在 `.dock-wrapper` 内部。它必须是 `dock-wrapper` 的兄弟节点，不能是其子节点。
+
+**Q: 图标在某些壁纸下看不清** 检查 `.dock-icon-svg` 是否有双层 `drop-shadow`。如仍不够，可加大白色层的 blur 值。
+
+**Q: 入场动画不触发** 检查 `centerSpreadDelay` 是否正确传入，确认 `motion.button` 有 `initial` 和 `animate` 属性。
+
+**Q: tooltip 定位偏移** `getBoundingClientRect()` 在 `motion.button` 有 `scale` 变换时可能返回变换后的坐标。确认在 `onMouseEnter` 而非 `onMouseLeave` 时读取坐标。
+
+### B. 当前状态总览
+
+| 机制 | 当前版本 | 对应章节 |
+| :-- | :-- | :-- |
+| tooltip 渲染位置 | 4.2 | §2.3、§4.2 |
+| 图标颜色方案 | 4.3 | §3.2、§4.3 |
+| tooltip 箭头 | 4.4（无箭头） | §3.4、§4.4 |
+| 入场动画 | 4.5 | §2.3、§4.5 |
+| 多实例管理 | 初版 | §2.3 |
+| 运行指示器 | 初版 | §3.3 |
+
+---
+
+**文档版本**：对应代码 4.5 **维护方式**：代码改动后在第四章追加 `### 4.X 标题`，并更新附录 B 对应行
