@@ -67,9 +67,9 @@
           },
           {
             "tab": "System",
-            "products": [
+            "dropdowns": [
               {
-                "product": "Dock",
+                "dropdown": "Dock",
                 "pages": [
                   "file",
                   {
