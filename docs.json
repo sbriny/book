@@ -67,9 +67,9 @@
           },
           {
             "tab": "System",
-            "dropdowns": [
+            "groups": [
               {
-                "dropdown": "Dock",
+                "group": "Dock",
                 "pages": [
                   "file",
                   {
@@ -82,9 +82,15 @@
                 ]
               },
               {
-                "dropdown": "窗口",
+                "group": "窗口",
                 "pages": [
                   "1"
+                ]
+              },
+              {
+                "group": "主题",
+                "pages": [
+                  "file-1"
                 ]
               }
             ]
